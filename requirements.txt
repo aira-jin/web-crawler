@@ -1,0 +1,6 @@
+Pyro5
+requests
+beautifulsoup4
+pandas
+seaborn
+matplotlib
