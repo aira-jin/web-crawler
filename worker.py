@@ -96,8 +96,12 @@ def main():
                 # For this simple logic, we just skip.
                 pass
                 
+    # --- NEW ERROR HANDLING BELOW ---
+    except (Pyro5.errors.ConnectionClosedError, Pyro5.errors.CommunicationError):
+        print(f"\n[{WORKER_ID}] Master disconnected (Time Limit Reached). Job Done!")
+
     except Exception as e:
-        print(f"[{WORKER_ID}] Critical Error: {e}")
+        print(f"[{WORKER_ID}] Unexpected Error: {e}")
 
 if __name__ == "__main__":
     main()
