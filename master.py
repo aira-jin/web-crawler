@@ -1,5 +1,6 @@
 # master.py
 import Pyro5.api
+import socket
 import queue
 import csv
 import time
@@ -83,8 +84,12 @@ def main():
     except ValueError:
         minutes = 5 # Default
         
-    # Start Pyro Daemon
-    daemon = Pyro5.api.Daemon(host="0.0.0.0") # Listen on all interfaces
+    # get IP
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+
+    # Start Pyro Daemon with IP
+    daemon = Pyro5.api.Daemon(host=local_ip) 
     uri = daemon.register(CrawlMaster(minutes), "crawler_master")
     
     print(f"\n[SYSTEM READY] Master URI: {uri}")
