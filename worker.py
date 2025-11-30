@@ -1,78 +1,103 @@
-# worker.py
 import Pyro5.api
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import time
 import random
-import sys
+import os
 
 # --- CONFIGURATION ---
-# PASTE THE URI FROM THE MASTER HERE
-MASTER_URI = input("Enter Master URI (e.g., PYRO:crawler_master@192.168.1.X:9090): ")
+MASTER_URI = input("Enter Master URI (e.g., PYRO:crawler_master@192.168.1.X:9090): ").strip()
 WORKER_ID = f"Node-{random.randint(1000,9999)}"
 
-# Headers to be polite and identify ourselves
 HEADERS = {
-    'User-Agent': 'DLSU_Student_Project_Bot/1.0 (Educational Purpose)'
+    'User-Agent': 'DLSU_Distributed_Crawler/1.0 (Student Project)'
 }
 
-def crawl_page(url):
-    """Downloads and parses a single page."""
-    try:
-        # Politeness Delay [Industry Standard]
-        time.sleep(random.uniform(1.0, 2.0)) 
+def is_downloadable(url):
+    """Checks if the URL is a file based on extension."""
+    return url.lower().endswith((
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".zip", ".rar", ".jpg", ".jpeg", ".png", ".gif", ".mp3", ".mp4"
+    ))
+
+def extract_description(soup):
+    """Prioritizes Title > Meta Description > First Paragraph."""
+    if soup.title and soup.title.string:
+        return soup.title.string.strip()
+    
+    desc_tag = soup.find("meta", attrs={"name": "description"})
+    if desc_tag and desc_tag.get("content"):
+        return desc_tag["content"].strip()
         
-        response = requests.get(url, headers=HEADERS, timeout=5)
+    p = soup.find("p")
+    if p:
+        return p.get_text(strip=True)[:100] + "..."
+        
+    return "No title available"
+
+def crawl_page(url):
+    """Downloads page, handles files, and extracts links."""
+    try:
+        # Politeness Delay
+        time.sleep(random.uniform(0.5, 1.5))
+        
+        # 1. Check if it's a static file
+        if is_downloadable(url):
+            filename = os.path.basename(urlparse(url).path)
+            return f"[FILE] {filename}", []
+
+        # 2. Download HTML
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        if "text/html" not in response.headers.get("Content-Type", ""):
+            return "[SKIPPED] Non-HTML content", []
+
         if response.status_code != 200:
             return None, []
-        
+
+        # 3. Parse Content
         soup = BeautifulSoup(response.text, 'html.parser')
-        title = soup.title.string.strip() if soup.title else "No Title"
+        title = extract_description(soup)
         
         links = []
         for tag in soup.find_all('a', href=True):
             absolute_link = urljoin(url, tag['href'])
-            # Basic filtering to avoid non-html resources
-            if not any(ext in absolute_link for ext in ['.pdf', '.jpg', '.png', '.css']):
-                links.append(absolute_link)
-                
+            links.append(absolute_link)
+            
         return title, links
         
     except Exception as e:
-        print(f"[Error] Failed to crawl {url}: {e}")
+        print(f"[{WORKER_ID}] Error on {url}: {e}")
         return None, []
 
 def main():
     print(f"[{WORKER_ID}] Connecting to Master...")
-    master = Pyro5.api.Proxy(MASTER_URI)
-    
     try:
+        master = Pyro5.api.Proxy(MASTER_URI)
+        
         while True:
-            # 1. Ask Master for work
             task = master.get_task(WORKER_ID)
             
             if task == "STOP":
-                print(f"[{WORKER_ID}] Received STOP signal. Exiting.")
+                print(f"[{WORKER_ID}] STOP signal received. Exiting.")
                 break
             
             if task == "WAIT":
-                print(f"[{WORKER_ID}] Queue empty. Waiting...")
-                time.sleep(2)
+                time.sleep(1)
                 continue
-                
-            # 2. Perform the work
-            print(f"[{WORKER_ID}] Crawling: {task}")
-            title, links = crawl_page(task)
             
-            # 3. Report back
-            if title:
-                master.submit_result(WORKER_ID, task, title, links)
+            print(f"[{WORKER_ID}] Processing: {task}")
+            result = crawl_page(task)
+            
+            if result and result[0]:
+                master.submit_result(WORKER_ID, task, result[0], result[1])
+            else:
+                # Even if failed, report back so we don't hang? 
+                # For this simple logic, we just skip.
+                pass
                 
-    except Pyro5.errors.ConnectionClosedError:
-        print(f"[{WORKER_ID}] Lost connection to Master. Shutting down.")
     except Exception as e:
-        print(f"[{WORKER_ID}] Unexpected error: {e}")
+        print(f"[{WORKER_ID}] Critical Error: {e}")
 
 if __name__ == "__main__":
     main()

@@ -1,43 +1,36 @@
-# visualize.py
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import os
 
 def generate_charts():
-    # 1. Load Data
-    try:
-        df = pd.read_csv('crawl_results.csv')
-    except FileNotFoundError:
-        print("Error: crawl_results.csv not found. Run the crawler first!")
+    if not os.path.exists('crawl_results.csv'):
+        print("Error: crawl_results.csv not found.")
         return
 
-    # 2. Preprocessing
-    # Convert timestamp to a readable datetime
+    # 1. Load Data
+    df = pd.read_csv('crawl_results.csv')
+    
+    # 2. Convert Timestamps
     df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-    # Round to the nearest minute to group data
-    df['minute'] = df['datetime'].dt.floor('T')
+    df['minute'] = df['datetime'].dt.floor('T') # Round to minute
 
-    # 3. Setup Style
+    # 3. Plot Pages per Minute
+    plt.figure(figsize=(10, 6))
     sns.set_theme(style="whitegrid")
-    plt.figure(figsize=(12, 6))
-
-    # 4. Create Visualization: Pages Crawled Over Time
-    # This shows the "speed" of your distributed system
+    
     data_per_minute = df.groupby('minute').size().reset_index(name='pages_count')
     
-    sns.lineplot(data=data_per_minute, x='minute', y='pages_count', marker='o', color='green')
+    sns.lineplot(data=data_per_minute, x='minute', y='pages_count', marker='o', linewidth=2.5)
     
-    plt.title('Distributed Crawler Performance: Pages Processed Per Minute', fontsize=16)
+    plt.title('Distributed Crawler Velocity (Pages/Minute)', fontsize=16)
     plt.xlabel('Time', fontsize=12)
-    plt.ylabel('Pages Crawled', fontsize=12)
+    plt.ylabel('Pages Processed', fontsize=12)
     plt.xticks(rotation=45)
     plt.tight_layout()
-
-    # 5. Save and Show
-    output_img = 'crawl_performance.png'
-    plt.savefig(output_img)
-    print(f"Chart saved to {output_img}")
-    plt.show()
+    
+    plt.savefig('crawl_velocity_chart.png')
+    print("Visualization saved as 'crawl_velocity_chart.png'")
 
 if __name__ == "__main__":
     generate_charts()
