@@ -90,29 +90,45 @@ class CrawlMaster:
         
         print(f"[Master] Detailed report generated at {STATS_FILE}")
 
+def monitor_shutdown(daemon, end_time):
+    """Background thread to kill the server when time is up."""
+    while time.time() < end_time:
+        time.sleep(1)
+    print("\n[Master] Time limit reached. Shutting down daemon...")
+    daemon.shutdown()
+
 def main():
     try:
         minutes = int(input("Enter duration in minutes: "))
     except ValueError:
         minutes = 5
 
-    # AUTOMATIC IP DETECTION (Fixes 0.0.0.0 issue)
+    # 1. Setup Network
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
     
-    # Force Pyro to bind to the real IP
+    # 2. Setup Objects
+    crawler = CrawlMaster(minutes)
     daemon = Pyro5.api.Daemon(host=local_ip, port=9090)
-    uri = daemon.register(CrawlMaster(minutes), "crawler_master")
+    uri = daemon.register(crawler, "crawler_master")
     
     print(f"\n[SYSTEM READY] Master URI: {uri}")
     print(f"--> COPY THIS URI TO YOUR WORKER NODES <--\n")
     
+    # 3. Start Shutdown Monitor (The Fix)
+    monitor_thread = threading.Thread(target=monitor_shutdown, args=(daemon, crawler.end_time))
+    monitor_thread.daemon = True # Kills thread if main program exits
+    monitor_thread.start()
+
+    # 4. Run Server Loop
     try:
-        daemon.requestLoop()
+        daemon.requestLoop() # Blocks until daemon.shutdown() is called
     except KeyboardInterrupt:
-        print("\n[Master] Shutting down...")
-        # We can't easily access the object here to call generate_report without global hacks,
-        # but the crawler saves CSV live, so data is safe.
+        print("\n[Master] Interrupted by user.")
+    
+    # 5. Generate Report (Runs after loop breaks)
+    print("[Master] Shutdown complete. Generating report...")
+    crawler.generate_report()
 
 if __name__ == "__main__":
     main()
