@@ -1,107 +1,60 @@
 import Pyro5.api
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 import time
 import random
-import os
 
 # --- CONFIGURATION ---
-MASTER_URI = input("Enter Master URI (e.g., PYRO:crawler_master@192.168.1.X:9090): ").strip()
+SERVER_IP = "10.2.13.18"  # <--- The Worker looks for the NS here
+PORT = 9090
 WORKER_ID = f"Node-{random.randint(1000,9999)}"
 
-HEADERS = {
-    'User-Agent': 'DLSU_Distributed_Crawler/1.0 (Student Project)'
-}
-
-def is_downloadable(url):
-    """Checks if the URL is a file based on extension."""
-    return url.lower().endswith((
-        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-        ".zip", ".rar", ".jpg", ".jpeg", ".png", ".gif", ".mp3", ".mp4"
-    ))
-
-def extract_description(soup):
-    """Prioritizes Title > Meta Description > First Paragraph."""
-    if soup.title and soup.title.string:
-        return soup.title.string.strip()
-    
-    desc_tag = soup.find("meta", attrs={"name": "description"})
-    if desc_tag and desc_tag.get("content"):
-        return desc_tag["content"].strip()
-        
-    p = soup.find("p")
-    if p:
-        return p.get_text(strip=True)[:100] + "..."
-        
-    return "No title available"
-
 def crawl_page(url):
-    """Downloads page, handles files, and extracts links."""
     try:
-        # Politeness Delay
-        time.sleep(random.uniform(0.5, 1.5))
+        # Simple Politeness & Request
+        time.sleep(0.5) 
+        resp = requests.get(url, headers={'User-Agent': 'Bot/1.0'}, timeout=5)
+        if resp.status_code != 200: return None, []
         
-        # 1. Check if it's a static file
-        if is_downloadable(url):
-            filename = os.path.basename(urlparse(url).path)
-            return f"[FILE] {filename}", []
-
-        # 2. Download HTML
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        if "text/html" not in response.headers.get("Content-Type", ""):
-            return "[SKIPPED] Non-HTML content", []
-
-        if response.status_code != 200:
-            return None, []
-
-        # 3. Parse Content
-        soup = BeautifulSoup(response.text, 'html.parser')
-        title = extract_description(soup)
-        
-        links = []
-        for tag in soup.find_all('a', href=True):
-            absolute_link = urljoin(url, tag['href'])
-            links.append(absolute_link)
-            
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        title = soup.title.string.strip() if soup.title else "No Title"
+        links = [urljoin(url, a['href']) for a in soup.find_all('a', href=True)]
         return title, links
-        
     except Exception as e:
-        print(f"[{WORKER_ID}] Error on {url}: {e}")
         return None, []
 
 def main():
-    print(f"[{WORKER_ID}] Connecting to Master...")
+    print(f"[{WORKER_ID}] Contacting Name Server at {SERVER_IP}...")
+    
     try:
-        master = Pyro5.api.Proxy(MASTER_URI)
+        # 1. Ask Name Server for the Master's address
+        ns = Pyro5.api.locate_ns(host=SERVER_IP, port=PORT)
+        uri = ns.lookup("crawler_master")
+        print(f"[{WORKER_ID}] Found Master at: {uri}")
+        
+        # 2. Connect to Master
+        master = Pyro5.api.Proxy(uri)
+        master._pyroBind() # Test connection
+        print(f"[{WORKER_ID}] Connected! Asking for tasks...")
         
         while True:
             task = master.get_task(WORKER_ID)
             
-            if task == "STOP":
-                print(f"[{WORKER_ID}] STOP signal received. Exiting.")
-                break
-            
-            if task == "WAIT":
+            if task == "STOP": break
+            if task == "WAIT": 
                 time.sleep(1)
                 continue
-            
-            print(f"[{WORKER_ID}] Processing: {task}")
-            result = crawl_page(task)
-            
-            if result and result[0]:
-                master.submit_result(WORKER_ID, task, result[0], result[1])
-            else:
-                # Even if failed, report back so we don't hang? 
-                # For this simple logic, we just skip.
-                pass
                 
-    # --- NEW ERROR HANDLING BELOW ---
-    except (Pyro5.errors.ConnectionClosedError, Pyro5.errors.CommunicationError):
-        print(f"\n[{WORKER_ID}] Master disconnected (Time Limit Reached). Job Done!")
+            print(f"[{WORKER_ID}] Crawling: {task}")
+            res = crawl_page(task)
+            
+            if res and res[0]:
+                master.submit_result(WORKER_ID, task, res[0], res[1])
 
     except Exception as e:
-        print(f"[{WORKER_ID}] Unexpected Error: {e}")
+        print(f"[ERROR] {e}")
+        print("Make sure Name Server AND Master are running on 10.2.13.18")
 
 if __name__ == "__main__":
     main()
