@@ -6,13 +6,12 @@ import time
 import random
 
 # --- CONFIGURATION ---
-SERVER_IP = "10.2.13.18"  # <--- The Worker looks for the NS here
+SERVER_IP = "10.2.13.18"
 PORT = 9090
 WORKER_ID = f"Node-{random.randint(1000,9999)}"
 
 def crawl_page(url):
     try:
-        # Simple Politeness & Request
         time.sleep(0.5) 
         resp = requests.get(url, headers={'User-Agent': 'Bot/1.0'}, timeout=5)
         if resp.status_code != 200: return None, []
@@ -28,29 +27,41 @@ def main():
     print(f"[{WORKER_ID}] Contacting Name Server at {SERVER_IP}...")
     
     try:
-        # 1. Ask Name Server for the Master's address
         ns = Pyro5.api.locate_ns(host=SERVER_IP, port=PORT)
         uri = ns.lookup("crawler_master")
         print(f"[{WORKER_ID}] Found Master at: {uri}")
         
-        # 2. Connect to Master
         master = Pyro5.api.Proxy(uri)
-        master._pyroBind() # Test connection
+        master._pyroBind()
         print(f"[{WORKER_ID}] Connected! Asking for tasks...")
         
         while True:
-            task = master.get_task(WORKER_ID)
-            
-            if task == "STOP": break
+            # 1. Get Task
+            try:
+                task = master.get_task(WORKER_ID)
+            except Pyro5.errors.ConnectionClosedError:
+                print(f"[{WORKER_ID}] Master went offline (Shutdown). Exiting.")
+                break
+
+            if task == "STOP": 
+                print(f"[{WORKER_ID}] Received STOP signal.")
+                break
             if task == "WAIT": 
                 time.sleep(1)
                 continue
                 
             print(f"[{WORKER_ID}] Crawling: {task}")
+            
+            # 2. Do the work
             res = crawl_page(task)
             
+            # 3. Submit Result (Safely)
             if res and res[0]:
-                master.submit_result(WORKER_ID, task, res[0], res[1])
+                try:
+                    master.submit_result(WORKER_ID, task, res[0], res[1])
+                except Pyro5.errors.ConnectionClosedError:
+                    print(f"[{WORKER_ID}] Tried to submit, but Master is gone. Exiting.")
+                    break
 
     except Exception as e:
         print(f"[ERROR] {e}")
