@@ -62,10 +62,30 @@ class CrawlMaster:
             print(f"[Master] {worker_id} returned {count} new links.")
 
     def generate_report(self):
-        print(f"[Master] Saving report to {STATS_FILE}...")
-        with open(STATS_FILE, 'w') as f:
-            f.write(f"Total URLs: {len(self.crawled_data)}\n")
-            f.write(f"Total Queue Size (Remaining): {self.url_queue.qsize()}\n")
+        """Generates the advanced report required by the rubric."""
+        elapsed = (time.time() - self.start_time) / 60
+        
+        # Calculate Stats
+        file_count = 0
+        html_count = 0
+        for title in self.crawled_data.values():
+            if title.startswith("[FILE]"):
+                file_count += 1
+            else:
+                html_count += 1
+
+        with open(STATS_FILE, 'w', encoding='utf-8') as f:
+            f.write("--- DISTRIBUTED CRAWL SUMMARY ---\n")
+            f.write(f"Total Duration: {elapsed:.2f} minutes\n")
+            f.write(f"Total URLs Processed: {len(self.crawled_data)}\n")
+            f.write(f"HTML Pages Scraped: {html_count}\n")
+            f.write(f"Files/Media Detected: {file_count}\n")
+            f.write(f"Unique URLs Discovered (Queue size + Visited): {len(self.visited)}\n\n")
+            f.write("--- LIST OF PROCESSED URLS ---\n")
+            for url, title in self.crawled_data.items():
+                f.write(f"{url}  [{title}]\n")
+        
+        print(f"[Master] Detailed report generated at {STATS_FILE}")
 
 # --- NEW SHUTDOWN LOGIC ---
 def monitor_exit(daemon, end_time):
