@@ -44,7 +44,7 @@ def crawl_page(url):
     """Downloads page, handles files, and extracts links."""
     try:
         # (Feature Restored: Random Politeness Delay)
-        time.sleep(random.uniform(0.5, 1.5))
+        time.sleep(random.uniform(0.1, 0.5))
         
         # 1. Check if it's a static file (PDF, JPG, etc.)
         if is_downloadable(url):
