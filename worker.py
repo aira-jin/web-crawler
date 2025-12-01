@@ -16,6 +16,15 @@ HEADERS = {
     'User-Agent': 'DLSU_Distributed_Crawler/1.0 (Student Project)'
 }
 
+# --- NODE STATISTICS ---
+NODE_STATS = {
+    "html_scraped": 0,
+    "files_found": 0,
+    "links_found": 0,
+    "active_threads": 0
+}
+STATS_LOCK = threading.Lock()
+
 # --- HELPER FUNCTIONS ---
 
 def is_downloadable(url):
@@ -38,10 +47,14 @@ def extract_description(soup):
 def crawl_page(url):
     try:
         time.sleep(random.uniform(0.1, 0.5))
+        
+        # 1. Check for Files
         if is_downloadable(url):
             filename = os.path.basename(urlparse(url).path)
+            with STATS_LOCK: NODE_STATS["files_found"] += 1
             return f"[FILE] {filename}", []
 
+        # 2. Download HTML
         response = requests.get(url, headers=HEADERS, timeout=10)
         if "text/html" not in response.headers.get("Content-Type", ""):
             return "[SKIPPED] Non-HTML content", []
@@ -49,6 +62,7 @@ def crawl_page(url):
         if response.status_code != 200:
             return None, []
 
+        # 3. Parse & Count
         soup = BeautifulSoup(response.text, 'html.parser')
         title = extract_description(soup)
         
@@ -56,37 +70,43 @@ def crawl_page(url):
         for tag in soup.find_all('a', href=True):
             absolute_link = urljoin(url, tag['href'])
             links.append(absolute_link)
+            
+        # Update Stats
+        with STATS_LOCK: 
+            NODE_STATS["html_scraped"] += 1
+            NODE_STATS["links_found"] += len(links)
+            
         return title, links
+        
     except Exception as e:
-        # print(f"[{WORKER_ID}] Error on {url}: {e}")
         return None, []
 
 # --- THREAD LOGIC ---
-def run_thread_loop(master_uri, thread_index):  # <--- CHANGED: Takes URI, not object
+def run_thread_loop(master_uri, thread_index):
     """Runs the crawling logic inside a thread."""
     
-    # 1. Create a NEW Proxy for this specific thread
-    # This fixes the "calling thread is not owner" error
-    master = Pyro5.api.Proxy(master_uri) 
+    # Register as Active
+    with STATS_LOCK: NODE_STATS["active_threads"] += 1
     
+    # Create Thread-Local Proxy
+    master = Pyro5.api.Proxy(master_uri) 
     current_id = f"{WORKER_ID}-{thread_index}"
-    print(f"[{current_id}] Thread started.")
 
     while True:
         try:
             task = master.get_task(current_id)
         except Pyro5.errors.ConnectionClosedError:
-            print(f"[{current_id}] Master went offline. Exiting.")
+            print(f"[{current_id}] Master went offline. Stopping.")
             break
         except Exception as e:
-            # Re-connect if proxy breaks
-            print(f"[{current_id}] Connection error: {e}. Reconnecting...")
             time.sleep(2)
-            master = Pyro5.api.Proxy(master_uri)
+            # Try to reconnect silently
+            try: master = Pyro5.api.Proxy(master_uri)
+            except: break
             continue
 
         if task == "STOP": 
-            # print(f"[{current_id}] Received STOP signal.")
+            print(f"[{current_id}] Received STOP signal.")
             break
         if task == "WAIT": 
             time.sleep(1)
@@ -100,8 +120,9 @@ def run_thread_loop(master_uri, thread_index):  # <--- CHANGED: Takes URI, not o
             except:
                 break
     
-    # Clean up proxy
+    # De-Register
     master._pyroRelease()
+    with STATS_LOCK: NODE_STATS["active_threads"] -= 1
 
 # --- MAIN LOOP ---
 
@@ -109,12 +130,11 @@ def main():
     print(f"[{WORKER_ID}] Contacting Name Server at {SERVER_IP}...")
     
     try:
-        # 1. Locate Name Server & Master
         ns = Pyro5.api.locate_ns(host=SERVER_IP, port=PORT)
         uri = ns.lookup("crawler_master")
         print(f"[{WORKER_ID}] Found Master at: {uri}")
         
-        # 2. Get Config (Using a temporary proxy)
+        # Fetch Config
         with Pyro5.api.Proxy(uri) as master:
             try:
                 config = master.get_config()
@@ -122,20 +142,35 @@ def main():
             except:
                 num_threads = 1
         
-        print(f"[{WORKER_ID}] Spawning {num_threads} threads...")
+        print(f"[{WORKER_ID}] Initializing {num_threads} threads...")
         
-        # 3. Launch Threads (Pass the URI, not the proxy object)
+        # Start Worker Threads
         threads = []
         for i in range(num_threads):
-            # Pass 'uri' string, so thread creates its own connection
             t = threading.Thread(target=run_thread_loop, args=(uri, i))
             t.daemon = True
             t.start()
             threads.append(t)
             time.sleep(0.1)
             
+        # Wait for threads to finish (Block until STOP signal received)
         for t in threads:
             t.join()
+            
+        # --- FINAL REPORT ---
+        print(f"\n[{WORKER_ID}] WORKER STOPPED. Generating Report...")
+        print("="*40)
+        print(f"Node Statistics for {WORKER_ID}")
+        print("="*40)
+        
+        total_processed = NODE_STATS["html_scraped"] + NODE_STATS["files_found"]
+        
+        print(f"Number of Threads Used: {num_threads}")
+        print(f"Total URLs Processed: {total_processed}")
+        print(f"HTML Pages Scraped: {NODE_STATS['html_scraped']}")
+        print(f"Files/Media Detected: {NODE_STATS['files_found']}")
+        print(f"Unique URLs Discovered (Links Extracted): {NODE_STATS['links_found']}")
+        print("="*40)
 
     except Exception as e:
         print(f"[ERROR] {e}")
