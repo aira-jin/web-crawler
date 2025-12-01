@@ -75,6 +75,7 @@ class CrawlMaster:
             # Add new links
             count = 0
             for link in found_links:
+                # Check if link belongs to the Target Domain set by user
                 if self.target_domain in urlparse(link).netloc and link not in self.visited:
                     self.visited.add(link)
                     self.url_queue.put(link)
@@ -85,6 +86,7 @@ class CrawlMaster:
         """Generates the advanced report required by the rubric."""
         elapsed = (time.time() - self.start_time) / 60
         
+        # Calculate Stats
         file_count = 0
         html_count = 0
         for title in self.crawled_data.values():
@@ -102,80 +104,86 @@ class CrawlMaster:
             f.write(f"Total URLs Processed: {len(self.crawled_data)}\n")
             f.write(f"HTML Pages Scraped: {html_count}\n")
             f.write(f"Files/Media Detected: {file_count}\n")
-            f.write(f"Unique URLs Discovered: {len(self.visited)}\n\n")
+            f.write(f"Unique URLs Discovered (Queue size + Visited): {len(self.visited)}\n\n")
             f.write("--- LIST OF PROCESSED URLS ---\n")
             for url, title in self.crawled_data.items():
                 f.write(f"{url}  [{title}]\n")
         
         print(f"[Master] Detailed report generated at {STATS_FILE}")
 
-# --- THREADED NAME SERVER ---
-def start_nameserver(host, port):
-    """Starts the Name Server loop (blocking) in a thread."""
-    try:
-        Pyro5.nameserver.start_ns_loop(host=host, port=port)
-    except Exception as e:
-        print(f"[NameServer Error] {e}")
-
 # --- SHUTDOWN LOGIC ---
-def monitor_exit(daemon, end_time):
-    """Waits for time to expire, gives a grace period, then shuts down Master."""
+def monitor_exit(daemon, ns_daemon, end_time):
+    """Waits for time to expire, gives a grace period, then shuts down."""
+    
+    # 1. Wait for the main duration
     while time.time() < end_time:
         time.sleep(1)
         
     print("\n[Master] TIME LIMIT REACHED. Stopping new tasks...")
     print("[Master] Entering 15s GRACE PERIOD to allow workers to finish...")
+    
+    # 2. The Grace Period
     time.sleep(15)
     
     print("[Master] Grace period over. Shutting down now.")
-    daemon.shutdown() 
+    ns_daemon.shutdown() # Stop the Name Server
+    daemon.shutdown()    # Stop the Master Daemon
 
 def main():
     print("--- DISTRIBUTED CRAWLER CONFIG ---")
     
-    # 1. Inputs
-    start_url = input("1. Enter Start URL (default: https://www.dlsu.edu.ph): ").strip() or "https://www.dlsu.edu.ph"
+    # 1. URL Input
+    start_url = input("1. Enter Start URL (default: https://www.dlsu.edu.ph): ").strip()
+    if not start_url:
+        start_url = "https://www.dlsu.edu.ph"
+    
+    # 2. Duration Input
     try:
         minutes = int(input("2. Enter Duration (mins): "))
     except ValueError:
+        print("Invalid input. Defaulting to 5 minutes.")
         minutes = 5
-        print("Defaulting to 5 minutes.")
+
+    # 3. Node Count Input
     try:
         nodes = int(input("3. Enter Number of Nodes: "))
     except ValueError:
+        print("Invalid input. Defaulting to 2 nodes.")
         nodes = 2
-        print("Defaulting to 2 nodes.")
 
-    # 2. Auto-Detect IP
+    # --- CONNECTION LOGIC ---
+    
+    # 1. Detect IP
     my_ip = get_local_ip()
     print(f"\n[Master] Detected LAN IP: {my_ip}")
-    
-    # 3. Start Name Server (Background Thread)
     print("[Master] Starting internal Name Server...")
-    t_ns = threading.Thread(target=start_nameserver, args=(my_ip, PORT), daemon=True)
-    t_ns.start()
-    time.sleep(2) # Give it a moment to initialize
     
-    # 4. Initialize Master Daemon
+    # 2. Start Embedded Name Server & Broadcast Listener
+    uri_ns, ns_daemon, broadcast_server = Pyro5.nameserver.start_ns(host=my_ip, port=PORT)
+    
+    # 3. Initialize Master Daemon
     crawler = CrawlMaster(start_url, minutes, nodes)
     daemon = Pyro5.api.Daemon(host=my_ip)
     uri = daemon.register(crawler)
     
-    # 5. Register with the Name Server we just started
-    try:
-        ns = Pyro5.api.locate_ns(host=my_ip, port=PORT)
-        ns.register("crawler_master", uri)
-        print(f"[Master] Registered 'crawler_master' with Name Server.")
-    except Exception as e:
-        print(f"[ERROR] Could not register with Name Server: {e}")
-        print("Ensure port 9090 is free.")
-        return
-
+    # 4. Register Master with the Name Server
+    ns_daemon.nameserver.register("crawler_master", uri)
+    
     print(f"[Master] Ready at {uri}")
     print("[Master] Broadcasting existence... Waiting for workers...")
 
-    # Start Shutdown Monitor
-    threading.Thread(target=monitor_exit, args=(daemon, crawler.end_time), daemon=True).start()
+    # 5. Start Background Threads for NS and Broadcast
+    t_ns = threading.Thread(target=ns_daemon.requestLoop)
+    t_ns.daemon = True
+    t_ns.start()
+    
+    if broadcast_server:
+        t_bc = threading.Thread(target=broadcast_server.run)
+        t_bc.daemon = True
+        t_bc.start()
+
+    # Start the Shutdown Monitor
+    threading.Thread(target=monitor_exit, args=(daemon, ns_daemon, crawler.end_time), daemon=True).start()
     
     try:
         daemon.requestLoop()
