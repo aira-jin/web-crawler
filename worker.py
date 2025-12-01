@@ -5,6 +5,7 @@ from urllib.parse import urljoin, urlparse
 import time
 import random
 import os
+import threading
 
 # --- CONFIGURATION ---
 SERVER_IP = "10.2.13.18"  # <--- Your VM IP (Connection Logic)
@@ -49,7 +50,6 @@ def crawl_page(url):
         # 1. Check if it's a static file (PDF, JPG, etc.)
         if is_downloadable(url):
             filename = os.path.basename(urlparse(url).path)
-            # Returns a special tag so Master knows it's a file
             return f"[FILE] {filename}", []
 
         # 2. Download HTML
@@ -77,48 +77,77 @@ def crawl_page(url):
         print(f"[{WORKER_ID}] Error on {url}: {e}")
         return None, []
 
-# --- MAIN LOOP (Uses the New Connection Logic) ---
+# --- THREAD LOGIC (Moved Loop Here) ---
+def run_thread_loop(master, thread_index):
+    """Runs the crawling logic inside a thread."""
+    # Create a unique sub-ID for this thread (e.g., Node-1234-0)
+    current_id = f"{WORKER_ID}-{thread_index}"
+    print(f"[{current_id}] Thread started.")
+
+    while True:
+        # 2. Get Task (With Shutdown Safety)
+        try:
+            task = master.get_task(current_id)
+        except Pyro5.errors.ConnectionClosedError:
+            print(f"[{current_id}] Master went offline (Shutdown). Exiting.")
+            break
+
+        if task == "STOP": 
+            print(f"[{current_id}] Received STOP signal.")
+            break
+        if task == "WAIT": 
+            time.sleep(1)
+            continue
+            
+        # print(f"[{current_id}] Crawling: {task}")
+        
+        # 3. Do the work (Uses the Restored Logic)
+        res = crawl_page(task)
+        
+        # 4. Submit Result (With Shutdown Safety)
+        if res and res[0]:
+            try:
+                master.submit_result(current_id, task, res[0], res[1])
+            except Pyro5.errors.ConnectionClosedError:
+                print(f"[{current_id}] Tried to submit, but Master is gone. Exiting.")
+                break
+
+# --- MAIN LOOP (Updated for Threads) ---
 
 def main():
     print(f"[{WORKER_ID}] Contacting Name Server at {SERVER_IP}...")
     
     try:
-        # 1. Locate Name Server & Master (The New Way)
+        # 1. Locate Name Server & Master
         ns = Pyro5.api.locate_ns(host=SERVER_IP, port=PORT)
         uri = ns.lookup("crawler_master")
         print(f"[{WORKER_ID}] Found Master at: {uri}")
         
         master = Pyro5.api.Proxy(uri)
         master._pyroBind()
-        print(f"[{WORKER_ID}] Connected! Asking for tasks...")
         
-        while True:
-            # 2. Get Task (With Shutdown Safety)
-            try:
-                task = master.get_task(WORKER_ID)
-            except Pyro5.errors.ConnectionClosedError:
-                print(f"[{WORKER_ID}] Master went offline (Shutdown). Exiting.")
-                break
-
-            if task == "STOP": 
-                print(f"[{WORKER_ID}] Received STOP signal.")
-                break
-            if task == "WAIT": 
-                time.sleep(1)
-                continue
-                
-            print(f"[{WORKER_ID}] Crawling: {task}")
+        # 2. Fetch Configuration
+        try:
+            config = master.get_config()
+            num_threads = config.get("threads", 1)
+        except Exception as e:
+            print(f"[{WORKER_ID}] Warning: Could not fetch config ({e}). Defaulting to 1 thread.")
+            num_threads = 1
             
-            # 3. Do the work (Uses the Restored Logic)
-            res = crawl_page(task)
+        print(f"[{WORKER_ID}] Connected! Spawning {num_threads} threads...")
+        
+        # 3. Launch Threads
+        threads = []
+        for i in range(num_threads):
+            t = threading.Thread(target=run_thread_loop, args=(master, i))
+            t.daemon = True # Ensures threads die if the main script stops
+            t.start()
+            threads.append(t)
+            time.sleep(0.1) # Stagger start slightly
             
-            # 4. Submit Result (With Shutdown Safety)
-            if res and res[0]:
-                try:
-                    master.submit_result(WORKER_ID, task, res[0], res[1])
-                except Pyro5.errors.ConnectionClosedError:
-                    print(f"[{WORKER_ID}] Tried to submit, but Master is gone. Exiting.")
-                    break
+        # Keep main thread alive while sub-threads work
+        for t in threads:
+            t.join()
 
     except Exception as e:
         print(f"[ERROR] {e}")
