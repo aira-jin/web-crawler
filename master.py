@@ -15,12 +15,13 @@ STATS_FILE = "crawl_summary.txt"
 
 @Pyro5.api.expose
 class CrawlMaster:
-    def __init__(self, start_url, duration_minutes, num_nodes):
+    def __init__(self, start_url, duration_minutes, num_nodes, threads_per_node):
         # Dynamic Configuration
         self.start_url = start_url
         # Extract "dlsu.edu.ph" from "https://www.dlsu.edu.ph"
         self.target_domain = urlparse(start_url).netloc.replace("www.", "") 
         self.num_nodes = num_nodes
+        self.threads_per_node = threads_per_node
         
         self.url_queue = queue.Queue()
         self.url_queue.put(self.start_url)
@@ -39,6 +40,15 @@ class CrawlMaster:
         print(f"         Target: {self.start_url} (Domain: {self.target_domain})")
         print(f"         Duration: {duration_minutes} mins")
         print(f"         Expected Nodes: {num_nodes}")
+        print(f"         Threads per Node: {threads_per_node}")
+
+    # --- NEW METHOD: ALLOW WORKERS TO FETCH CONFIG ---
+    def get_config(self):
+        """Allows workers to fetch the configuration on startup."""
+        return {
+            "threads": self.threads_per_node,
+            "domain": self.target_domain
+        }
 
     def get_task(self, worker_id):
         # 1. Check if time is up
@@ -47,11 +57,12 @@ class CrawlMaster:
         
         try:
             url = self.url_queue.get(block=False)
+            # Optional: Comment this out if too many threads make console spammy
             print(f"[Master] Sent {url} -> {worker_id}")
             return url
         except queue.Empty:
             return "WAIT"
-
+    
     def submit_result(self, worker_id, source_url, title, found_links):
         with self.lock:
             # Save data
@@ -62,7 +73,12 @@ class CrawlMaster:
             # Add new links
             count = 0
             for link in found_links:
-                # Check if link belongs to the Target Domain set by user
+                # normalize url
+                link = link.split('#')[0]
+                if link.endswith('/'):
+                    link = link[:-1]
+
+                # check uniqueness
                 if self.target_domain in urlparse(link).netloc and link not in self.visited:
                     self.visited.add(link)
                     self.url_queue.put(link)
@@ -87,6 +103,7 @@ class CrawlMaster:
             f.write(f"Start URL: {self.start_url}\n")
             f.write(f"Target Domain: {self.target_domain}\n")
             f.write(f"Number of Nodes: {self.num_nodes}\n")
+            f.write(f"Threads per Node: {self.threads_per_node}\n")
             f.write(f"Total Duration: {elapsed:.2f} minutes\n")
             f.write(f"Total URLs Processed: {len(self.crawled_data)}\n")
             f.write(f"HTML Pages Scraped: {html_count}\n")
@@ -127,18 +144,25 @@ def main():
     try:
         minutes = int(input("2. Enter Duration (mins): "))
     except ValueError:
-        print("Invalid input. Defaulting to 5 minutes.")
+        print("Defaulting to 5 minutes.")
         minutes = 5
 
     # 3. Node Count Input
     try:
         nodes = int(input("3. Enter Number of Nodes: "))
     except ValueError:
-        print("Invalid input. Defaulting to 2 nodes.")
+        print("Defaulting to 2 nodes.")
         nodes = 2
 
-    # Initialize Master with inputs
-    crawler = CrawlMaster(start_url, minutes, nodes)
+    # 4. Threads per Worker Input (NEW)
+    try:
+        threads = int(input("4. Enter Threads per Node (default: 1): "))
+    except ValueError:
+        print("Defaulting to 1 thread.")
+        threads = 1
+
+    # Initialize Master with inputs (passed threads here)
+    crawler = CrawlMaster(start_url, minutes, nodes, threads)
     
     daemon = Pyro5.api.Daemon(host=SERVER_IP)
     
