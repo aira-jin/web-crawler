@@ -7,16 +7,14 @@ import random
 import os
 
 # --- CONFIGURATION ---
-SERVER_IP = "10.2.13.18"  # <--- Your VM IP (Connection Logic)
 PORT = 9090
 WORKER_ID = f"Node-{random.randint(1000,9999)}"
 
-# (Feature Restored: Custom Headers to look legitimate)
 HEADERS = {
     'User-Agent': 'DLSU_Distributed_Crawler/1.0 (Student Project)'
 }
 
-# --- HELPER FUNCTIONS (Restored from Old Version) ---
+# --- HELPER FUNCTIONS ---
 
 def is_downloadable(url):
     """Checks if the URL is a file based on extension."""
@@ -43,19 +41,16 @@ def extract_description(soup):
 def crawl_page(url):
     """Downloads page, handles files, and extracts links."""
     try:
-        # (Feature Restored: Random Politeness Delay)
         time.sleep(random.uniform(0.1, 0.5))
         
         # 1. Check if it's a static file (PDF, JPG, etc.)
         if is_downloadable(url):
             filename = os.path.basename(urlparse(url).path)
-            # Returns a special tag so Master knows it's a file
             return f"[FILE] {filename}", []
 
         # 2. Download HTML
         response = requests.get(url, headers=HEADERS, timeout=10)
         
-        # (Feature Restored: Content-Type Check)
         if "text/html" not in response.headers.get("Content-Type", ""):
             return "[SKIPPED] Non-HTML content", []
 
@@ -64,7 +59,7 @@ def crawl_page(url):
 
         # 3. Parse Content
         soup = BeautifulSoup(response.text, 'html.parser')
-        title = extract_description(soup) # Uses the smarter extraction
+        title = extract_description(soup)
         
         links = []
         for tag in soup.find_all('a', href=True):
@@ -77,14 +72,16 @@ def crawl_page(url):
         print(f"[{WORKER_ID}] Error on {url}: {e}")
         return None, []
 
-# --- MAIN LOOP (Uses the New Connection Logic) ---
+# --- MAIN LOOP ---
 
 def main():
-    print(f"[{WORKER_ID}] Contacting Name Server at {SERVER_IP}...")
+    print(f"[{WORKER_ID}] Searching for Master (Broadcasting)...")
     
     try:
-        # 1. Locate Name Server & Master (The New Way)
-        ns = Pyro5.api.locate_ns(host=SERVER_IP, port=PORT)
+        # 1. Locate Name Server via Broadcast
+        ns = Pyro5.api.locate_ns(port=PORT) 
+        
+        # 2. Look up the Master object
         uri = ns.lookup("crawler_master")
         print(f"[{WORKER_ID}] Found Master at: {uri}")
         
@@ -93,11 +90,15 @@ def main():
         print(f"[{WORKER_ID}] Connected! Asking for tasks...")
         
         while True:
-            # 2. Get Task (With Shutdown Safety)
+            # 3. Get Task
             try:
                 task = master.get_task(WORKER_ID)
             except Pyro5.errors.ConnectionClosedError:
                 print(f"[{WORKER_ID}] Master went offline (Shutdown). Exiting.")
+                break
+            except Exception as e:
+                # Catch generic errors to allow clean exit on disconnect
+                print(f"[{WORKER_ID}] Connection lost: {e}")
                 break
 
             if task == "STOP": 
@@ -109,10 +110,10 @@ def main():
                 
             print(f"[{WORKER_ID}] Crawling: {task}")
             
-            # 3. Do the work (Uses the Restored Logic)
+            # 4. Do the work
             res = crawl_page(task)
             
-            # 4. Submit Result (With Shutdown Safety)
+            # 5. Submit Result
             if res and res[0]:
                 try:
                     master.submit_result(WORKER_ID, task, res[0], res[1])
@@ -121,8 +122,8 @@ def main():
                     break
 
     except Exception as e:
-        print(f"[ERROR] {e}")
-        print("Make sure Name Server AND Master are running on 10.2.13.18")
+        print(f"[ERROR] Could not find Master: {e}")
+        print("Ensure Master is running and network is set to Bridged Adapter (if using VMs).")
 
 if __name__ == "__main__":
     main()
