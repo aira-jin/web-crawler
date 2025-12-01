@@ -6,6 +6,7 @@ import time
 import random
 import os
 import threading
+import math
 
 # --- CONFIGURATION ---
 SERVER_IP = "10.2.13.18"
@@ -166,7 +167,7 @@ def main():
         print(f"\n[{WORKER_ID}] WORKER STOPPED. Final Metrics:")
         print("="*40)
         print(f" Threads Used:   {num_threads}")
-        print(f" Throughput:     {ppm:.2f} pages/min")
+        print(f" Throughput:     {math.floor(ppm*100)/100:.2f} pages/min")
         print(f" Success Rate:   {success_rate:.1f}%")
         print("="*40)
 
