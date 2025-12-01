@@ -1,37 +1,24 @@
 import Pyro5.api
-import Pyro5.nameserver
 import queue
 import csv
 import time
 import threading
-import socket
 from urllib.parse import urlparse
 
 # --- CONFIGURATION ---
+SERVER_IP = "10.2.13.18"
 PORT = 9090
 
 # --- CRAWLER SETTINGS ---
 OUTPUT_FILE = "crawl_results.csv"
 STATS_FILE = "crawl_summary.txt"
 
-# --- HELPER: GET LOCAL IP ---
-def get_local_ip():
-    """Auto-detects the machine's LAN IP address."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('10.255.255.255', 1))
-        IP = s.getsockname()[0]
-    except Exception:
-        IP = '127.0.0.1'
-    finally:
-        s.close()
-    return IP
-
 @Pyro5.api.expose
 class CrawlMaster:
     def __init__(self, start_url, duration_minutes, num_nodes):
         # Dynamic Configuration
         self.start_url = start_url
+        # Extract "dlsu.edu.ph" from "https://www.dlsu.edu.ph"
         self.target_domain = urlparse(start_url).netloc.replace("www.", "") 
         self.num_nodes = num_nodes
         
@@ -111,8 +98,8 @@ class CrawlMaster:
         
         print(f"[Master] Detailed report generated at {STATS_FILE}")
 
-# --- SHUTDOWN LOGIC ---
-def monitor_exit(daemon, ns_daemon, end_time):
+# --- NEW SHUTDOWN LOGIC ---
+def monitor_exit(daemon, end_time):
     """Waits for time to expire, gives a grace period, then shuts down."""
     
     # 1. Wait for the main duration
@@ -122,12 +109,11 @@ def monitor_exit(daemon, ns_daemon, end_time):
     print("\n[Master] TIME LIMIT REACHED. Stopping new tasks...")
     print("[Master] Entering 15s GRACE PERIOD to allow workers to finish...")
     
-    # 2. The Grace Period
+    # 2. The Grace Period (Keep server alive so workers can submit last results)
     time.sleep(15)
     
     print("[Master] Grace period over. Shutting down now.")
-    ns_daemon.shutdown() # Stop the Name Server
-    daemon.shutdown()    # Stop the Master Daemon
+    daemon.shutdown()
 
 def main():
     print("--- DISTRIBUTED CRAWLER CONFIG ---")
@@ -151,39 +137,25 @@ def main():
         print("Invalid input. Defaulting to 2 nodes.")
         nodes = 2
 
-    # --- CONNECTION LOGIC ---
-    
-    # 1. Detect IP
-    my_ip = get_local_ip()
-    print(f"\n[Master] Detected LAN IP: {my_ip}")
-    print("[Master] Starting internal Name Server...")
-    
-    # 2. Start Embedded Name Server & Broadcast Listener
-    uri_ns, ns_daemon, broadcast_server = Pyro5.nameserver.start_ns(host=my_ip, port=PORT)
-    
-    # 3. Initialize Master Daemon
+    # Initialize Master with inputs
     crawler = CrawlMaster(start_url, minutes, nodes)
-    daemon = Pyro5.api.Daemon(host=my_ip)
-    uri = daemon.register(crawler)
     
-    # 4. Register Master with the Name Server
-    ns_daemon.nameserver.register("crawler_master", uri)
+    daemon = Pyro5.api.Daemon(host=SERVER_IP)
     
+    print(f"\n[Master] Connecting to Name Server at {SERVER_IP}...")
+    try:
+        ns = Pyro5.api.locate_ns(host=SERVER_IP, port=PORT)
+        uri = daemon.register(crawler)
+        ns.register("crawler_master", uri)
+    except Exception as e:
+        print(f"[ERROR] Name Server not found: {e}")
+        return
+
     print(f"[Master] Ready at {uri}")
-    print("[Master] Broadcasting existence... Waiting for workers...")
+    print("[Master] Waiting for workers...")
 
-    # 5. Start Background Threads for NS and Broadcast
-    t_ns = threading.Thread(target=ns_daemon.requestLoop)
-    t_ns.daemon = True
-    t_ns.start()
-    
-    if broadcast_server:
-        t_bc = threading.Thread(target=broadcast_server.run)
-        t_bc.daemon = True
-        t_bc.start()
-
-    # Start the Shutdown Monitor
-    threading.Thread(target=monitor_exit, args=(daemon, ns_daemon, crawler.end_time), daemon=True).start()
+    # Start the "Polite" Shutdown Monitor
+    threading.Thread(target=monitor_exit, args=(daemon, crawler.end_time), daemon=True).start()
     
     try:
         daemon.requestLoop()
