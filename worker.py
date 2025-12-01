@@ -18,9 +18,8 @@ HEADERS = {
 
 # --- NODE STATISTICS ---
 NODE_STATS = {
-    "html_scraped": 0,
-    "files_found": 0,
-    "links_found": 0,
+    "success_count": 0, # Successful fetches (HTML + Files)
+    "error_count": 0,   # Timeouts, 404s, Network Errors
     "active_threads": 0
 }
 STATS_LOCK = threading.Lock()
@@ -51,18 +50,23 @@ def crawl_page(url):
         # 1. Check for Files
         if is_downloadable(url):
             filename = os.path.basename(urlparse(url).path)
-            with STATS_LOCK: NODE_STATS["files_found"] += 1
+            with STATS_LOCK: NODE_STATS["success_count"] += 1
             return f"[FILE] {filename}", []
 
         # 2. Download HTML
         response = requests.get(url, headers=HEADERS, timeout=10)
+        
+        # 3. Check for Errors (404, 500, etc.)
+        if response.status_code != 200:
+            with STATS_LOCK: NODE_STATS["error_count"] += 1
+            return None, []
+            
         if "text/html" not in response.headers.get("Content-Type", ""):
+            # Technically a success (we reached the server), but skipped content
+            with STATS_LOCK: NODE_STATS["success_count"] += 1
             return "[SKIPPED] Non-HTML content", []
 
-        if response.status_code != 200:
-            return None, []
-
-        # 3. Parse & Count
+        # 4. Parse & Count Success
         soup = BeautifulSoup(response.text, 'html.parser')
         title = extract_description(soup)
         
@@ -71,24 +75,19 @@ def crawl_page(url):
             absolute_link = urljoin(url, tag['href'])
             links.append(absolute_link)
             
-        # Update Stats
-        with STATS_LOCK: 
-            NODE_STATS["html_scraped"] += 1
-            NODE_STATS["links_found"] += len(links)
+        with STATS_LOCK: NODE_STATS["success_count"] += 1
             
         return title, links
         
     except Exception as e:
+        # Network errors, Timeouts, DNS failures
+        with STATS_LOCK: NODE_STATS["error_count"] += 1
         return None, []
 
 # --- THREAD LOGIC ---
 def run_thread_loop(master_uri, thread_index):
-    """Runs the crawling logic inside a thread."""
-    
-    # Register as Active
     with STATS_LOCK: NODE_STATS["active_threads"] += 1
     
-    # Create Thread-Local Proxy
     master = Pyro5.api.Proxy(master_uri) 
     current_id = f"{WORKER_ID}-{thread_index}"
 
@@ -98,15 +97,13 @@ def run_thread_loop(master_uri, thread_index):
         except Pyro5.errors.ConnectionClosedError:
             print(f"[{current_id}] Master went offline. Stopping.")
             break
-        except Exception as e:
+        except Exception:
             time.sleep(2)
-            # Try to reconnect silently
             try: master = Pyro5.api.Proxy(master_uri)
             except: break
             continue
 
         if task == "STOP": 
-            print(f"[{current_id}] Received STOP signal.")
             break
         if task == "WAIT": 
             time.sleep(1)
@@ -120,7 +117,6 @@ def run_thread_loop(master_uri, thread_index):
             except:
                 break
     
-    # De-Register
     master._pyroRelease()
     with STATS_LOCK: NODE_STATS["active_threads"] -= 1
 
@@ -128,13 +124,13 @@ def run_thread_loop(master_uri, thread_index):
 
 def main():
     print(f"[{WORKER_ID}] Contacting Name Server at {SERVER_IP}...")
+    start_time = time.time()
     
     try:
         ns = Pyro5.api.locate_ns(host=SERVER_IP, port=PORT)
         uri = ns.lookup("crawler_master")
         print(f"[{WORKER_ID}] Found Master at: {uri}")
         
-        # Fetch Config
         with Pyro5.api.Proxy(uri) as master:
             try:
                 config = master.get_config()
@@ -144,7 +140,6 @@ def main():
         
         print(f"[{WORKER_ID}] Initializing {num_threads} threads...")
         
-        # Start Worker Threads
         threads = []
         for i in range(num_threads):
             t = threading.Thread(target=run_thread_loop, args=(uri, i))
@@ -153,23 +148,26 @@ def main():
             threads.append(t)
             time.sleep(0.1)
             
-        # Wait for threads to finish (Block until STOP signal received)
         for t in threads:
             t.join()
             
-        # --- FINAL REPORT ---
-        print(f"\n[{WORKER_ID}] WORKER STOPPED. Generating Report...")
-        print("="*40)
-        print(f"Node Statistics for {WORKER_ID}")
-        print("="*40)
+        # --- PERFORMANCE REPORT ---
+        duration_mins = (time.time() - start_time) / 60
+        if duration_mins == 0: duration_mins = 0.01 
         
-        total_processed = NODE_STATS["html_scraped"] + NODE_STATS["files_found"]
+        successes = NODE_STATS["success_count"]
+        errors = NODE_STATS["error_count"]
+        total_ops = successes + errors
         
-        print(f"Number of Threads Used: {num_threads}")
-        print(f"Total URLs Processed: {total_processed}")
-        print(f"HTML Pages Scraped: {NODE_STATS['html_scraped']}")
-        print(f"Files/Media Detected: {NODE_STATS['files_found']}")
-        print(f"Unique URLs Discovered (Links Extracted): {NODE_STATS['links_found']}")
+        # Calculate Metrics
+        ppm = total_ops / duration_mins
+        success_rate = (successes / total_ops * 100) if total_ops > 0 else 0
+        
+        print(f"\n[{WORKER_ID}] WORKER STOPPED. Final Metrics:")
+        print("="*40)
+        print(f" Threads Used:   {num_threads}")
+        print(f" Throughput:     {ppm:.2f} pages/min")
+        print(f" Success Rate:   {success_rate:.1f}%")
         print("="*40)
 
     except Exception as e:
