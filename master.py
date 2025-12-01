@@ -10,17 +10,21 @@ SERVER_IP = "10.2.13.18"
 PORT = 9090
 
 # --- CRAWLER SETTINGS ---
-TARGET_DOMAIN = "dlsu.edu.ph"
-START_URL = "https://www.dlsu.edu.ph"
 OUTPUT_FILE = "crawl_results.csv"
 STATS_FILE = "crawl_summary.txt"
 
 @Pyro5.api.expose
 class CrawlMaster:
-    def __init__(self, duration_minutes):
+    def __init__(self, start_url, duration_minutes, num_nodes):
+        # Dynamic Configuration
+        self.start_url = start_url
+        # Extract "dlsu.edu.ph" from "https://www.dlsu.edu.ph"
+        self.target_domain = urlparse(start_url).netloc.replace("www.", "") 
+        self.num_nodes = num_nodes
+        
         self.url_queue = queue.Queue()
-        self.url_queue.put(START_URL)
-        self.visited = set([START_URL])
+        self.url_queue.put(self.start_url)
+        self.visited = set([self.start_url])
         self.crawled_data = {} 
         self.start_time = time.time()
         self.end_time = self.start_time + (duration_minutes * 60)
@@ -31,7 +35,10 @@ class CrawlMaster:
             writer = csv.writer(f)
             writer.writerow(['url', 'title', 'timestamp'])
         
-        print(f"[Master] Initialized. Duration: {duration_minutes} mins.")
+        print(f"[Master] Initialized.")
+        print(f"         Target: {self.start_url} (Domain: {self.target_domain})")
+        print(f"         Duration: {duration_minutes} mins")
+        print(f"         Expected Nodes: {num_nodes}")
 
     def get_task(self, worker_id):
         # 1. Check if time is up
@@ -55,7 +62,8 @@ class CrawlMaster:
             # Add new links
             count = 0
             for link in found_links:
-                if TARGET_DOMAIN in urlparse(link).netloc and link not in self.visited:
+                # Check if link belongs to the Target Domain set by user
+                if self.target_domain in urlparse(link).netloc and link not in self.visited:
                     self.visited.add(link)
                     self.url_queue.put(link)
                     count += 1
@@ -76,6 +84,9 @@ class CrawlMaster:
 
         with open(STATS_FILE, 'w', encoding='utf-8') as f:
             f.write("--- DISTRIBUTED CRAWL SUMMARY ---\n")
+            f.write(f"Start URL: {self.start_url}\n")
+            f.write(f"Target Domain: {self.target_domain}\n")
+            f.write(f"Number of Nodes: {self.num_nodes}\n")
             f.write(f"Total Duration: {elapsed:.2f} minutes\n")
             f.write(f"Total URLs Processed: {len(self.crawled_data)}\n")
             f.write(f"HTML Pages Scraped: {html_count}\n")
@@ -105,15 +116,33 @@ def monitor_exit(daemon, end_time):
     daemon.shutdown()
 
 def main():
+    print("--- DISTRIBUTED CRAWLER CONFIG ---")
+    
+    # 1. URL Input
+    start_url = input("1. Enter Start URL (default: https://www.dlsu.edu.ph): ").strip()
+    if not start_url:
+        start_url = "https://www.dlsu.edu.ph"
+    
+    # 2. Duration Input
     try:
-        minutes = int(input("Enter duration (mins): "))
-    except ValueError: minutes = 5
+        minutes = int(input("2. Enter Duration (mins): "))
+    except ValueError:
+        print("Invalid input. Defaulting to 5 minutes.")
+        minutes = 5
 
-    crawler = CrawlMaster(minutes)
+    # 3. Node Count Input
+    try:
+        nodes = int(input("3. Enter Number of Nodes: "))
+    except ValueError:
+        print("Invalid input. Defaulting to 2 nodes.")
+        nodes = 2
+
+    # Initialize Master with inputs
+    crawler = CrawlMaster(start_url, minutes, nodes)
     
     daemon = Pyro5.api.Daemon(host=SERVER_IP)
     
-    print(f"[Master] Connecting to Name Server at {SERVER_IP}...")
+    print(f"\n[Master] Connecting to Name Server at {SERVER_IP}...")
     try:
         ns = Pyro5.api.locate_ns(host=SERVER_IP, port=PORT)
         uri = daemon.register(crawler)
