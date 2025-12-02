@@ -43,11 +43,12 @@ def extract_description(soup):
 def crawl_page(url):
     try:
         time.sleep(random.uniform(0.1, 0.5))
-        
-        # Check for Files
+
+        # 1. File / media detection
         if is_downloadable(url):
             filename = os.path.basename(urlparse(url).path)
-            with STATS_LOCK: NODE_STATS["success_count"] += 1
+            with STATS_LOCK:
+                NODE_STATS["success_count"] += 1
             return f"[FILE] {filename}", []
 
         # 2. Download HTML with Fault Tolerance
@@ -55,46 +56,52 @@ def crawl_page(url):
         for attempt in range(3):
             try:
                 response = requests.get(url, headers=HEADERS, timeout=(3, 10))
+
+                # Treat temporary server errors as retryable
                 if response.status_code in [429, 500, 502, 503, 504]:
-                    response.raise_for_status()
-                break
-                
+                    raise requests.RequestException
+
+                break  # success, exit retry loop
+
             except requests.RequestException:
                 if attempt == 2:
-                    with STATS_LOCK: NODE_STATS["error_count"] += 1
+                    with STATS_LOCK:
+                        NODE_STATS["error_count"] += 1
                     return None, []
                 
-                # Exponential Backoff
-                sleep_time = 2 ** attempt
-                time.sleep(sleep_time)
-        
-        # Check for Errors
+                time.sleep(2 ** attempt)  # exponential backoff
+
+        # 3. Final status validation
         if response.status_code != 200:
-            with STATS_LOCK: NODE_STATS["error_count"] += 1
+            with STATS_LOCK:
+                NODE_STATS["error_count"] += 1
             return None, []
-            
+
+        # 4. Skip non-HTML content
         if "text/html" not in response.headers.get("Content-Type", ""):
-            # skipped content
-            with STATS_LOCK: NODE_STATS["success_count"] += 1
+            with STATS_LOCK:
+                NODE_STATS["success_count"] += 1
             return "[SKIPPED] Non-HTML content", []
 
-        # Parse & Count Success
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # 5. Parse HTML
+        soup = BeautifulSoup(response.text, "html.parser")
         title = extract_description(soup)
-        
-        links = []
-        for tag in soup.find_all('a', href=True):
-            absolute_link = urljoin(url, tag['href'])
-            links.append(absolute_link)
-            
-        with STATS_LOCK: NODE_STATS["success_count"] += 1
-            
+
+        # Extract absolute links
+        links = [urljoin(url, tag["href"]) for tag in soup.find_all("a", href=True)]
+
+        # Count successful page scrape
+        with STATS_LOCK:
+            NODE_STATS["success_count"] += 1
+
         return title, links
-        
-    except Exception as e:
-        # Network errors, Timeouts, DNS failures
-        with STATS_LOCK: NODE_STATS["error_count"] += 1
+
+    except Exception:
+        # Catch-all fallback
+        with STATS_LOCK:
+            NODE_STATS["error_count"] += 1
         return None, []
+
 
 def run_thread_loop(master_uri, thread_index):
     with STATS_LOCK: NODE_STATS["active_threads"] += 1
