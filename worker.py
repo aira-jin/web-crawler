@@ -8,7 +8,6 @@ import os
 import threading
 import math
 
-# --- CONFIGURATION ---
 SERVER_IP = "10.2.13.18"
 PORT = 9090
 WORKER_ID = f"Node-{random.randint(1000,9999)}"
@@ -17,15 +16,12 @@ HEADERS = {
     'User-Agent': 'DLSU_Distributed_Crawler/1.0 (Student Project)'
 }
 
-# --- NODE STATISTICS ---
 NODE_STATS = {
     "success_count": 0, # Successful fetches (HTML + Files)
     "error_count": 0,   # Timeouts, 404s, Network Errors
     "active_threads": 0
 }
 STATS_LOCK = threading.Lock()
-
-# --- HELPER FUNCTIONS ---
 
 def is_downloadable(url):
     return url.lower().endswith((
@@ -48,26 +44,26 @@ def crawl_page(url):
     try:
         time.sleep(random.uniform(0.1, 0.5))
         
-        # 1. Check for Files
+        # Check for Files
         if is_downloadable(url):
             filename = os.path.basename(urlparse(url).path)
             with STATS_LOCK: NODE_STATS["success_count"] += 1
             return f"[FILE] {filename}", []
 
-        # 2. Download HTML
+        # Download HTML
         response = requests.get(url, headers=HEADERS, timeout=10)
         
-        # 3. Check for Errors (404, 500, etc.)
+        # Check for Errors
         if response.status_code != 200:
             with STATS_LOCK: NODE_STATS["error_count"] += 1
             return None, []
             
         if "text/html" not in response.headers.get("Content-Type", ""):
-            # Technically a success (we reached the server), but skipped content
+            # skipped content
             with STATS_LOCK: NODE_STATS["success_count"] += 1
             return "[SKIPPED] Non-HTML content", []
 
-        # 4. Parse & Count Success
+        # Parse & Count Success
         soup = BeautifulSoup(response.text, 'html.parser')
         title = extract_description(soup)
         
@@ -85,7 +81,6 @@ def crawl_page(url):
         with STATS_LOCK: NODE_STATS["error_count"] += 1
         return None, []
 
-# --- THREAD LOGIC ---
 def run_thread_loop(master_uri, thread_index):
     with STATS_LOCK: NODE_STATS["active_threads"] += 1
     
@@ -122,7 +117,6 @@ def run_thread_loop(master_uri, thread_index):
     master._pyroRelease()
     with STATS_LOCK: NODE_STATS["active_threads"] -= 1
 
-# --- MAIN LOOP ---
 
 def main():
     print(f"[{WORKER_ID}] Contacting Name Server at {SERVER_IP}...")
@@ -153,7 +147,7 @@ def main():
         for t in threads:
             t.join()
             
-        # --- PERFORMANCE REPORT ---
+        # peformance
         duration_mins = (time.time() - start_time) / 60
         if duration_mins == 0: duration_mins = 0.01 
         
@@ -161,7 +155,7 @@ def main():
         errors = NODE_STATS["error_count"]
         total_ops = successes + errors
         
-        # Calculate Metrics
+        # metrics
         ppm = total_ops / duration_mins
         success_rate = (successes / total_ops * 100) if total_ops > 0 else 0
         

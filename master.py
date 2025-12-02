@@ -5,18 +5,16 @@ import time
 import threading
 from urllib.parse import urlparse
 
-# --- CONFIGURATION ---
 SERVER_IP = "10.2.13.18"
 PORT = 9090
 
-# --- CRAWLER SETTINGS ---
 OUTPUT_FILE = "crawl_results.csv"
 STATS_FILE = "crawl_summary.txt"
 
 @Pyro5.api.expose
 class CrawlMaster:
     def __init__(self, start_url, duration_minutes, num_nodes, threads_per_node):
-        # Dynamic Configuration
+        
         self.start_url = start_url
         # Extract "dlsu.edu.ph" from "https://www.dlsu.edu.ph"
         self.target_domain = urlparse(start_url).netloc.replace("www.", "") 
@@ -31,7 +29,7 @@ class CrawlMaster:
         self.end_time = self.start_time + (duration_minutes * 60)
         self.lock = threading.Lock()
         
-        # Init CSV
+        # CSV
         with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(['url', 'title', 'timestamp'])
@@ -42,7 +40,6 @@ class CrawlMaster:
         print(f"         Expected Nodes: {num_nodes}")
         print(f"         Threads per Node: {threads_per_node}")
 
-    # --- NEW METHOD: ALLOW WORKERS TO FETCH CONFIG ---
     def get_config(self):
         """Allows workers to fetch the configuration on startup."""
         return {
@@ -51,13 +48,12 @@ class CrawlMaster:
         }
 
     def get_task(self, worker_id):
-        # 1. Check if time is up
+        # Check if time is up
         if time.time() > self.end_time:
             return "STOP"
         
         try:
             url = self.url_queue.get(block=False)
-            # Optional: Comment this out if too many threads make console spammy
             print(f"[Master] Sent {url} -> {worker_id}")
             return url
         except queue.Empty:
@@ -115,18 +111,18 @@ class CrawlMaster:
         
         print(f"[Master] Detailed report generated at {STATS_FILE}")
 
-# --- NEW SHUTDOWN LOGIC ---
+
 def monitor_exit(daemon, end_time):
     """Waits for time to expire, gives a grace period, then shuts down."""
     
-    # 1. Wait for the main duration
+    # main duration
     while time.time() < end_time:
         time.sleep(1)
         
     print("\n[Master] TIME LIMIT REACHED. Stopping new tasks...")
     print("[Master] Entering 15s GRACE PERIOD to allow workers to finish...")
     
-    # 2. The Grace Period (Keep server alive so workers can submit last results)
+    # grace period
     time.sleep(15)
     
     print("[Master] Grace period over. Shutting down now.")
@@ -135,26 +131,26 @@ def monitor_exit(daemon, end_time):
 def main():
     print("--- DISTRIBUTED CRAWLER CONFIG ---")
     
-    # 1. URL Input
+    # URL Input
     start_url = input("1. Enter Start URL (default: https://www.dlsu.edu.ph): ").strip()
     if not start_url:
         start_url = "https://www.dlsu.edu.ph"
     
-    # 2. Duration Input
+    # Duration Input
     try:
         minutes = int(input("2. Enter Duration (mins): "))
     except ValueError:
         print("Defaulting to 5 minutes.")
         minutes = 5
 
-    # 3. Node Count Input
+    # Node Count Input
     try:
         nodes = int(input("3. Enter Number of Nodes: "))
     except ValueError:
         print("Defaulting to 2 nodes.")
         nodes = 2
 
-    # 4. Threads per Worker Input (NEW)
+    # Threads per Worker Input
     try:
         threads = int(input("4. Enter Threads per Node (default: 1): "))
     except ValueError:
