@@ -50,8 +50,23 @@ def crawl_page(url):
             with STATS_LOCK: NODE_STATS["success_count"] += 1
             return f"[FILE] {filename}", []
 
-        # Download HTML
-        response = requests.get(url, headers=HEADERS, timeout=10)
+        # 2. Download HTML with Fault Tolerance
+        response = None
+        for attempt in range(3):
+            try:
+                response = requests.get(url, headers=HEADERS, timeout=(3, 10))
+                if response.status_code in [429, 500, 502, 503, 504]:
+                    response.raise_for_status()
+                break
+                
+            except requests.RequestException:
+                if attempt == 2:
+                    with STATS_LOCK: NODE_STATS["error_count"] += 1
+                    return None, []
+                
+                # Exponential Backoff
+                sleep_time = 2 ** attempt
+                time.sleep(sleep_time)
         
         # Check for Errors
         if response.status_code != 200:
