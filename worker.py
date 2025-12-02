@@ -114,6 +114,7 @@ def run_thread_loop(master_uri, thread_index):
         
         if res and res[0]:
             try:
+                print(f"[{current_id}] Scraped: {task} -> Sending to Master")
                 master.submit_result(current_id, task, res[0], res[1])
             except:
                 break
